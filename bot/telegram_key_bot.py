@@ -1,6 +1,11 @@
 """
 Telegram Bot - SunLon Key Manager PRO
-Đã fix lỗi 409 conflict
+Đã fix:
+- Volume cho database
+- Rate limit chống spam
+- Hash HWID bảo mật
+- Flask threaded mode
+- Fix chia cho 0
 """
 
 import telebot
@@ -14,6 +19,7 @@ import time
 import threading
 import hashlib
 import re
+import sys
 from datetime import timedelta
 from flask import Flask, jsonify, request, send_file
 
@@ -27,8 +33,15 @@ logger = logging.getLogger(__name__)
 # ==================== CẤU HÌNH ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
-DB_PATH = 'sunlon_keys.db'
+
+# SỬ DỤNG VOLUME - QUAN TRỌNG!
+# Vào Railway: Settings → Volumes → Mount path: /data
+DB_PATH = os.environ.get('DB_PATH', '/data/sunlon_keys.db')
 PORT = int(os.environ.get('PORT', 10000))
+
+# Rate limit - chống spam
+REQUEST_LOG = {}
+RATE_LIMIT_SECONDS = 1  # 1 request/giây
 
 if not BOT_TOKEN:
     print("❌ LỖI: Thiếu BOT_TOKEN!")
@@ -39,6 +52,7 @@ try:
     bot_info = bot.get_me()
     print(f"✅ Bot đã kết nối!")
     print(f"   Username: @{bot_info.username}")
+    print(f"   Database path: {DB_PATH}")
 except Exception as e:
     print(f"❌ Lỗi: {e}")
     exit(1)
@@ -51,10 +65,29 @@ except:
     pass
 time.sleep(1)
 
+# ==================== HELPER FUNCTIONS ====================
+def is_spam(ip):
+    """Kiểm tra spam request (rate limit)"""
+    now = time.time()
+    if ip in REQUEST_LOG and now - REQUEST_LOG[ip] < RATE_LIMIT_SECONDS:
+        return True
+    REQUEST_LOG[ip] = now
+    return False
+
+def hash_hwid(hwid):
+    """Hash HWID để bảo mật"""
+    return hashlib.sha256(hwid.encode()).hexdigest()
+
 # ==================== DATABASE ====================
 def init_db():
     """Khởi tạo database"""
     try:
+        # Đảm bảo thư mục /data tồn tại
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            print(f"✅ Created directory: {db_dir}")
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
@@ -67,7 +100,7 @@ def init_db():
             expire_date DATE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             used_by TEXT,
-            used_hwid TEXT,
+            used_hwid_hash TEXT,
             used_at TIMESTAMP,
             device_name TEXT,
             device_info TEXT,
@@ -80,7 +113,7 @@ def init_db():
             action TEXT,
             ip_address TEXT,
             user_agent TEXT,
-            hwid TEXT,
+            hwid_hash TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         
@@ -95,7 +128,7 @@ def init_db():
         
         conn.commit()
         conn.close()
-        print("✅ Database initialized")
+        print(f"✅ Database initialized at {DB_PATH}")
         return True
     except Exception as e:
         print(f"❌ Database init error: {e}")
@@ -110,14 +143,14 @@ def is_admin(user_id):
     except:
         return False
 
-def log_activity(key_code, action, ip=None, user_agent=None, hwid=None):
+def log_activity(key_code, action, ip=None, user_agent=None, hwid_hash=None):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            INSERT INTO logs (key_code, action, ip_address, user_agent, hwid) 
+            INSERT INTO logs (key_code, action, ip_address, user_agent, hwid_hash) 
             VALUES (?, ?, ?, ?, ?)
-        """, (key_code, action, ip, user_agent, hwid))
+        """, (key_code, action, ip, user_agent, hwid_hash))
         conn.commit()
         conn.close()
     except:
@@ -153,34 +186,44 @@ def health():
 
 @web_app.route('/checkkey')
 def check_key_api():
+    """API check key với rate limit và HWID hash"""
+    ip = request.remote_addr
+    
+    # Rate limit - chống spam
+    if is_spam(ip):
+        return jsonify({'valid': False, 'error': 'Too many requests'}), 429
+    
     try:
         key_code = request.args.get('key', '').upper()
-        hwid = request.args.get('hwid', '')
+        raw_hwid = request.args.get('hwid', '')
         device_name = request.args.get('device_name', 'Unknown')
         device_info = request.args.get('device_info', '')
-        ip = request.remote_addr
+        user_agent = request.headers.get('User-Agent', '')
         
         if not key_code:
             return jsonify({'valid': False, 'error': 'Missing key code'}), 400
         
-        if not hwid:
+        if not raw_hwid:
             return jsonify({'valid': False, 'error': 'Missing HWID'}), 400
+        
+        # Hash HWID để bảo mật
+        hwid_hash = hash_hwid(raw_hwid)
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
         c.execute("""
-            SELECT user_name, status, expire_date, used_by, used_hwid, device_name
+            SELECT user_name, status, expire_date, used_by, used_hwid_hash, device_name
             FROM keys WHERE key_code = ?
         """, (key_code,))
         result = c.fetchone()
         
         if not result:
-            log_activity(key_code, 'invalid_key', ip, None, hwid)
+            log_activity(key_code, 'invalid_key', ip, user_agent, hwid_hash)
             conn.close()
             return jsonify({'valid': False, 'error': 'Key khong ton tai'})
         
-        user_name, status, expire_date, used_by, used_hwid, saved_device = result
+        user_name, status, expire_date, used_by, stored_hwid_hash, saved_device = result
         
         if status != 'active':
             conn.close()
@@ -190,14 +233,14 @@ def check_key_api():
         if expire_date:
             expire_obj = datetime.datetime.strptime(expire_date, '%Y-%m-%d').date()
             if expire_obj < datetime.date.today():
-                log_activity(key_code, 'expired', ip, None, hwid)
+                log_activity(key_code, 'expired', ip, user_agent, hwid_hash)
                 conn.close()
                 return jsonify({'valid': False, 'error': f'Key het han tu {expire_date}'})
             days_left = (expire_obj - datetime.date.today()).days
         
-        if used_hwid:
-            if hwid != used_hwid:
-                log_activity(key_code, 'hwid_mismatch', ip, None, hwid)
+        if stored_hwid_hash:
+            if hwid_hash != stored_hwid_hash:
+                log_activity(key_code, 'hwid_mismatch', ip, user_agent, hwid_hash)
                 conn.close()
                 return jsonify({
                     'valid': False,
@@ -207,12 +250,12 @@ def check_key_api():
                 })
         else:
             c.execute("""
-                UPDATE keys SET used_by=?, used_hwid=?, used_at=CURRENT_TIMESTAMP,
+                UPDATE keys SET used_by=?, used_hwid_hash=?, used_at=CURRENT_TIMESTAMP,
                     device_name=?, device_info=?
                 WHERE key_code=?
-            """, (user_name, hwid, device_name, device_info, key_code))
+            """, (user_name, hwid_hash, device_name, device_info, key_code))
             conn.commit()
-            log_activity(key_code, 'activated', ip, None, hwid)
+            log_activity(key_code, 'activated', ip, user_agent, hwid_hash)
         
         conn.close()
         
@@ -221,7 +264,7 @@ def check_key_api():
             'user': user_name,
             'expire': expire_date if expire_date else 'Vinh vien',
             'days_left': days_left,
-            'device': saved_device if used_hwid else device_name
+            'device': saved_device if stored_hwid_hash else device_name
         })
         
     except Exception as e:
@@ -230,35 +273,44 @@ def check_key_api():
 
 @web_app.route('/reset_device')
 def reset_device_api():
+    """API yêu cầu reset thiết bị với rate limit"""
+    ip = request.remote_addr
+    
+    # Rate limit
+    if is_spam(ip):
+        return jsonify({'success': False, 'error': 'Too many requests'}), 429
+    
     try:
         key_code = request.args.get('key', '').upper()
-        hwid = request.args.get('hwid', '')
-        ip = request.remote_addr
+        raw_hwid = request.args.get('hwid', '')
+        user_agent = request.headers.get('User-Agent', '')
         
-        if not key_code or not hwid:
+        if not key_code or not raw_hwid:
             return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+        
+        hwid_hash = hash_hwid(raw_hwid)
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        c.execute("SELECT user_name, used_hwid, status FROM keys WHERE key_code = ?", (key_code,))
+        c.execute("SELECT user_name, used_hwid_hash, status FROM keys WHERE key_code = ?", (key_code,))
         result = c.fetchone()
         
         if not result:
             conn.close()
             return jsonify({'success': False, 'error': 'Key khong ton tai'})
         
-        user_name, used_hwid, status = result
+        user_name, stored_hwid_hash, status = result
         
         if status != 'active':
             conn.close()
             return jsonify({'success': False, 'error': f'Key da bi {status}'})
         
-        if not used_hwid:
+        if not stored_hwid_hash:
             conn.close()
             return jsonify({'success': False, 'error': 'Key chua duoc kich hoat'})
         
-        if hwid != used_hwid:
+        if hwid_hash != stored_hwid_hash:
             conn.close()
             return jsonify({'success': False, 'error': 'HWID khong khop'})
         
@@ -269,7 +321,7 @@ def reset_device_api():
         conn.commit()
         conn.close()
         
-        log_activity(key_code, 'reset_requested', ip, None, hwid)
+        log_activity(key_code, 'reset_requested', ip, user_agent, hwid_hash)
         
         admin_msg = f"""🔔 YEU CAU RESET THIET BI
 
@@ -289,8 +341,9 @@ Dung lenh: /resetkey {key_code} de xac nhan"""
         return jsonify({'success': False, 'error': str(e)}), 500
 
 def run_web():
+    """Chạy Flask web server với threaded mode"""
     print(f"🌐 Web server running on port {PORT}")
-    web_app.run(host='0.0.0.0', port=PORT)
+    web_app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 # ==================== TELEGRAM COMMANDS ====================
 
@@ -387,7 +440,7 @@ def list_keys(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT key_code, user_name, status, expire_date, used_hwid, device_name 
+        SELECT key_code, user_name, status, expire_date, used_hwid_hash, device_name 
         FROM keys ORDER BY created_at DESC LIMIT 20
     """)
     keys = c.fetchall()
@@ -399,7 +452,7 @@ def list_keys(message):
     
     text = "📋 DANH SACH KEY (20 gan nhat)\n\n"
     for key in keys:
-        key_code, user_name, status, expire_date, hwid, device = key
+        key_code, user_name, status, expire_date, hwid_hash, device = key
         
         is_expired = False
         if expire_date:
@@ -423,7 +476,7 @@ def list_keys(message):
         text += f"   👤 {user_name}\n"
         text += f"   📅 {expire_date if expire_date else 'Vinh vien'}\n"
         text += f"   📊 {status_text}\n"
-        if hwid:
+        if hwid_hash:
             text += f"   🖥️ {device if device else 'Unknown'}\n"
         text += "\n"
     
@@ -445,7 +498,7 @@ def check_key(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT user_name, status, expire_date, used_hwid, device_name
+        SELECT user_name, status, expire_date, used_hwid_hash, device_name
         FROM keys WHERE key_code=?
     """, (key_code,))
     result = c.fetchone()
@@ -455,7 +508,7 @@ def check_key(message):
         bot.reply_to(message, f"❌ Key {key_code} khong ton tai!")
         return
     
-    user_name, status, expire_date, hwid, device = result
+    user_name, status, expire_date, hwid_hash, device = result
     
     if status != 'active':
         bot.reply_to(message, "❌ Key da bi vo hieu!")
@@ -474,7 +527,7 @@ def check_key(message):
     else:
         expire_text = "Vinh vien"
     
-    device_status = "✅ Da kich hoat" if hwid else "⚡ Chua kich hoat"
+    device_status = "✅ Da kich hoat" if hwid_hash else "⚡ Chua kich hoat"
     device_info = f"\n🖥️ Thiet bi: {device}" if device else ""
     
     text = f"""✅ THONG TIN KEY
@@ -503,7 +556,7 @@ def reset_key_device(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    c.execute("SELECT user_name, used_hwid, device_name, status FROM keys WHERE key_code = ?", (key_code,))
+    c.execute("SELECT user_name, used_hwid_hash, device_name, status FROM keys WHERE key_code = ?", (key_code,))
     result = c.fetchone()
     
     if not result:
@@ -511,20 +564,20 @@ def reset_key_device(message):
         conn.close()
         return
     
-    user_name, used_hwid, device_name, status = result
+    user_name, used_hwid_hash, device_name, status = result
     
     if status != 'active':
         bot.reply_to(message, f"❌ Key da bi {status}!")
         conn.close()
         return
     
-    if not used_hwid:
+    if not used_hwid_hash:
         bot.reply_to(message, f"ℹ️ Key chua duoc kich hoat!")
         conn.close()
         return
     
     c.execute("""
-        UPDATE keys SET used_hwid = NULL, used_by = NULL, used_at = NULL, device_name = NULL, device_info = NULL
+        UPDATE keys SET used_hwid_hash = NULL, used_by = NULL, used_at = NULL, device_name = NULL, device_info = NULL
         WHERE key_code = ?
     """, (key_code,))
     
@@ -561,7 +614,7 @@ def reset_request(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    c.execute("SELECT user_name, used_hwid, status FROM keys WHERE key_code = ?", (key_code,))
+    c.execute("SELECT user_name, used_hwid_hash, status FROM keys WHERE key_code = ?", (key_code,))
     result = c.fetchone()
     
     if not result:
@@ -569,14 +622,14 @@ def reset_request(message):
         conn.close()
         return
     
-    user_name, used_hwid, status = result
+    user_name, used_hwid_hash, status = result
     
     if status != 'active':
         bot.reply_to(message, f"❌ Key da bi {status}!")
         conn.close()
         return
     
-    if not used_hwid:
+    if not used_hwid_hash:
         bot.reply_to(message, f"ℹ️ Key chua duoc kich hoat!")
         conn.close()
         return
@@ -621,7 +674,7 @@ def stats(message):
     c.execute("SELECT COUNT(*) FROM keys WHERE status='active'")
     active = c.fetchone()[0]
     
-    c.execute("SELECT COUNT(*) FROM keys WHERE used_hwid IS NOT NULL")
+    c.execute("SELECT COUNT(*) FROM keys WHERE used_hwid_hash IS NOT NULL")
     used = c.fetchone()[0]
     
     c.execute("SELECT COUNT(*) FROM keys WHERE expire_date < date('now') AND expire_date IS NOT NULL")
@@ -631,6 +684,9 @@ def stats(message):
     pending = c.fetchone()[0]
     
     conn.close()
+    
+    # FIX: Tránh chia cho 0
+    usage_rate = (used / total * 100) if total > 0 else 0
     
     text = f"""📊 THONG KE KEY PRO
 
@@ -642,7 +698,7 @@ def stats(message):
 
 📈 Reset cho xu ly: {pending}
 
-💡 Ty le kich hoat: {used/total*100:.1f}% (neu total > 0)"""
+💡 Ty le kich hoat: {usage_rate:.1f}% (neu total > 0)"""
     
     bot.reply_to(message, text)
 
@@ -719,7 +775,7 @@ def show_logs(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT key_code, action, ip_address, hwid, timestamp 
+        SELECT key_code, action, ip_address, hwid_hash, timestamp 
         FROM logs ORDER BY timestamp DESC LIMIT 20
     """)
     logs = c.fetchall()
@@ -731,12 +787,12 @@ def show_logs(message):
     
     text = "📋 LOG HOAT DONG (20 gan nhat)\n\n"
     for log in logs:
-        key_code, action, ip, hwid, timestamp = log
+        key_code, action, ip, hwid_hash, timestamp = log
         text += f"🕐 {timestamp[:16]}\n"
         text += f"   🔑 {key_code} | {action}\n"
         text += f"   🌐 {ip}\n"
-        if hwid:
-            text += f"   🖥️ HWID: {hwid[:16]}...\n"
+        if hwid_hash:
+            text += f"   🖥️ HWID: {hwid_hash[:16]}...\n"
         text += "\n"
     
     if len(text) > 4000:
@@ -777,36 +833,34 @@ if __name__ == "__main__":
     print("🤖 SunLon Bot PRO dang chay...")
     print(f"   Bot: @{bot_info.username}")
     print(f"   Admin ID: {ADMIN_ID}")
+    print(f"   Database: {DB_PATH}")
     print("=" * 60)
     print("🌐 API Endpoints:")
     print(f"   GET /health - Health check")
-    print(f"   GET /checkkey?key=XXX&hwid=ID - Check key")
+    print(f"   GET /checkkey?key=XXX&hwid=ID - Check key (rate limit: 1 req/s)")
     print(f"   GET /reset_device?key=XXX&hwid=ID - Reset device")
     print("=" * 60)
     
-    # Chạy web server trong thread riêng
+    # Chạy web server trong thread riêng với threaded mode
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
-    print("🌐 Web server started")
+    print("🌐 Web server started (threaded mode)")
     
     # Chạy bot với xử lý conflict
     retry_count = 0
     while True:
         try:
             print("🤖 Bot polling started...")
-            # Dùng polling với skip_pending và restart_on_change
             bot.infinity_polling(
                 timeout=60,
                 long_polling_timeout=60,
-                skip_pending=True,
-                restart_on_change=True
+                skip_pending=True
             )
         except Exception as e:
             error_msg = str(e)
             if "409" in error_msg or "Conflict" in error_msg:
                 retry_count += 1
                 print(f"⚠️ Conflict detected (attempt {retry_count}), restarting...")
-                # Xóa webhook và thử lại
                 try:
                     bot.remove_webhook()
                     print("✅ Webhook removed")
@@ -815,7 +869,8 @@ if __name__ == "__main__":
                 time.sleep(5)
                 if retry_count > 3:
                     print("🔄 Restarting bot...")
-                    retry_count = 0
+                    # Khởi động lại hoàn toàn
+                    os.execv(sys.executable, ['python'] + sys.argv)
             else:
                 print(f"⚠️ Error: {e}")
                 time.sleep(10)
