@@ -1,13 +1,5 @@
-# Bot requirements
+# Bot requirements (chỉ những thứ cần cho bot)
 pytelegrambotapi==4.8.0
 flask==2.3.3
 flask-cors==4.0.0
 python-dotenv==1.0.0
-
-# Client requirements (cho local, không cần trên server)
-customtkinter==5.2.0
-requests==2.31.0
-Pillow==10.0.0
-
-# Server requirements (tùy chọn)
-cryptography==41.0.7
