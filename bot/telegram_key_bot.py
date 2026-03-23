@@ -1,6 +1,10 @@
 """
-Telegram Bot - SunLon Key Manager
-Deploy trên Railway
+Telegram Bot - SunLon Key Manager PRO
+Tính năng:
+- API check key không cần tải DB
+- HWID chống share key
+- Thống kê chi tiết
+- Deploy trên Railway
 """
 
 import telebot
@@ -12,8 +16,9 @@ import os
 import logging
 import time
 import threading
+import hashlib
 from datetime import timedelta
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, request, send_file
 
 # Cấu hình logging
 logging.basicConfig(
@@ -29,30 +34,26 @@ DB_PATH = 'sunlon_keys.db'
 PORT = int(os.environ.get('PORT', 10000))
 
 if not BOT_TOKEN:
-    print("❌ LỖI: Thiếu BOT_TOKEN environment variable!")
-    print("Vui lòng thêm BOT_TOKEN vào Environment Variables trên Railway")
+    print("❌ LỖI: Thiếu BOT_TOKEN!")
     exit(1)
-
-if ADMIN_ID == 0:
-    print("⚠️ CẢNH BÁO: ADMIN_ID chưa được cấu hình!")
-    print("Vui lòng thêm ADMIN_ID vào Environment Variables trên Railway")
 
 try:
     bot = telebot.TeleBot(BOT_TOKEN)
     bot_info = bot.get_me()
-    print(f"✅ Bot đã kết nối thành công!")
+    print(f"✅ Bot đã kết nối!")
     print(f"   Username: @{bot_info.username}")
-    print(f"   Name: {bot_info.first_name}")
 except Exception as e:
-    print(f"❌ Lỗi kết nối bot: {e}")
+    print(f"❌ Lỗi: {e}")
     exit(1)
 
 # ==================== DATABASE ====================
 def init_db():
-    """Khởi tạo database"""
+    """Khởi tạo database với cấu trúc PRO"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
+        # Bảng keys với HWID support
         c.execute('''CREATE TABLE IF NOT EXISTS keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key_code TEXT UNIQUE NOT NULL,
@@ -62,12 +63,24 @@ def init_db():
             expire_date DATE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             used_by TEXT,
+            used_hwid TEXT,
             used_at TIMESTAMP,
             notes TEXT
         )''')
+        
+        # Bảng logs
+        c.execute('''CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_code TEXT,
+            action TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
         conn.commit()
         conn.close()
-        print("✅ Database initialized successfully")
+        print("✅ Database PRO initialized")
         return True
     except Exception as e:
         print(f"❌ Database init error: {e}")
@@ -84,12 +97,26 @@ def is_admin(user_id):
     except:
         return False
 
+def log_activity(key_code, action, ip=None, user_agent=None):
+    """Ghi log hoạt động"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO logs (key_code, action, ip_address, user_agent) 
+            VALUES (?, ?, ?, ?)
+        """, (key_code, action, ip, user_agent))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
 # ==================== FLASK WEB SERVER ====================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    """Trang chủ - hiển thị thông tin bot"""
+    """Trang chủ - thông tin bot"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -97,14 +124,18 @@ def home():
         total_keys = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM keys WHERE status='active'")
         active_keys = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM keys WHERE used_by IS NOT NULL")
+        used_keys = c.fetchone()[0]
         conn.close()
         
         return jsonify({
             'status': 'online',
             'bot_name': bot_info.first_name,
             'bot_username': bot_info.username,
+            'version': 'PRO 2.0',
             'total_keys': total_keys,
             'active_keys': active_keys,
+            'used_keys': used_keys,
             'admin_id': ADMIN_ID,
             'timestamp': datetime.datetime.now().isoformat()
         })
@@ -116,20 +147,145 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'bot': '@' + bot_info.username}), 200
 
-# ==================== ENDPOINT CHO CLIENT TẢI DATABASE ====================
+@web_app.route('/checkkey')
+def check_key_api():
+    """
+    API kiểm tra key - KHÔNG CẦN TẢI DB
+    Cách dùng: GET /checkkey?key=ABC123&hwid=DEVICE_ID
+    Trả về: {"valid": true, "user": "Nguyen Van A", "expire": "2026-04-01"}
+    """
+    try:
+        key_code = request.args.get('key', '').upper()
+        hwid = request.args.get('hwid', '')
+        ip = request.remote_addr
+        user_agent = request.headers.get('User-Agent', '')
+        
+        if not key_code:
+            return jsonify({'valid': False, 'error': 'Missing key code'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Kiểm tra key
+        c.execute("""
+            SELECT user_name, status, expire_date, used_by, used_hwid 
+            FROM keys 
+            WHERE key_code = ?
+        """, (key_code,))
+        result = c.fetchone()
+        
+        if not result:
+            log_activity(key_code, 'invalid_key', ip, user_agent)
+            conn.close()
+            return jsonify({'valid': False, 'error': 'Key không tồn tại'})
+        
+        user_name, status, expire_date, used_by, used_hwid = result
+        
+        # Kiểm tra trạng thái
+        if status != 'active':
+            log_activity(key_code, f'inactive_{status}', ip, user_agent)
+            conn.close()
+            return jsonify({'valid': False, 'error': f'Key đã bị {status}'})
+        
+        # Kiểm tra hết hạn
+        if expire_date:
+            expire_obj = datetime.datetime.strptime(expire_date, '%Y-%m-%d').date()
+            if expire_obj < datetime.date.today():
+                log_activity(key_code, 'expired', ip, user_agent)
+                conn.close()
+                return jsonify({'valid': False, 'error': f'Key đã hết hạn từ {expire_date}'})
+        
+        # KIỂM TRA HWID - Chống share key
+        if used_by:
+            # Key đã được kích hoạt, kiểm tra HWID
+            if hwid and used_hwid and hwid != used_hwid:
+                log_activity(key_code, 'hwid_mismatch', ip, user_agent)
+                conn.close()
+                return jsonify({
+                    'valid': False, 
+                    'error': 'Key đã được kích hoạt trên thiết bị khác!'
+                })
+        else:
+            # Key chưa được kích hoạt, lưu HWID
+            if hwid:
+                c.execute("""
+                    UPDATE keys 
+                    SET used_by=?, used_hwid=?, used_at=CURRENT_TIMESTAMP 
+                    WHERE key_code=?
+                """, (user_name, hwid, key_code))
+                conn.commit()
+                log_activity(key_code, 'activated', ip, user_agent)
+        
+        conn.close()
+        
+        # Trả về thông tin key
+        return jsonify({
+            'valid': True,
+            'user': user_name,
+            'expire': expire_date if expire_date else 'Vĩnh viễn',
+            'message': 'Key hợp lệ',
+            'days_left': (datetime.datetime.strptime(expire_date, '%Y-%m-%d').date() - datetime.date.today()).days if expire_date else 999
+        })
+        
+    except Exception as e:
+        logger.error(f"Check key API error: {e}")
+        return jsonify({'valid': False, 'error': str(e)}), 500
+
 @web_app.route('/getdb')
 def get_database():
-    """API để client tải database"""
+    """API tải database (chỉ admin có token)"""
+    admin_token = request.headers.get('X-Admin-Token', '')
+    if admin_token != os.environ.get('ADMIN_TOKEN', ''):
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     try:
         if os.path.exists(DB_PATH):
             return send_file(
                 DB_PATH,
                 as_attachment=True,
-                download_name='sunlon_keys.db',
+                download_name=f'sunlon_keys_{datetime.datetime.now().strftime("%Y%m%d")}.db',
                 mimetype='application/x-sqlite3'
             )
         else:
             return jsonify({'error': 'Database not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@web_app.route('/stats')
+def api_stats():
+    """API thống kê (chỉ admin)"""
+    admin_token = request.headers.get('X-Admin-Token', '')
+    if admin_token != os.environ.get('ADMIN_TOKEN', ''):
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM keys")
+        total = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM keys WHERE status='active'")
+        active = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM keys WHERE used_by IS NOT NULL")
+        used = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM keys WHERE expire_date < date('now') AND expire_date IS NOT NULL")
+        expired = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM logs WHERE date(timestamp)=date('now')")
+        today_checks = c.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            'total_keys': total,
+            'active_keys': active,
+            'used_keys': used,
+            'expired_keys': expired,
+            'today_checks': today_checks
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -142,31 +298,35 @@ def run_web():
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    """Lệnh start"""
     user_id = message.from_user.id
     user_name = message.from_user.first_name
     
     if is_admin(user_id):
         text = f"""
-🎲 *SUNLON KEY MANAGER* 🎲
+🎲 *SUNLON KEY MANAGER PRO* 🎲
 
 Xin chào Admin *{user_name}*!
 
-📌 *Lệnh:*
+📌 *Lệnh Admin:*
 /createkey [tên] [ngày] - Tạo key
 /listkeys - Xem danh sách
-/check [key] - Kiểm tra key
-/stats - Xem thống kê
+/checkkey [key] - Kiểm tra key
 /revokekey [key] - Vô hiệu key
 /deletekey [key] - Xóa key
-/getdb - Tải database (Telegram)
+/stats - Xem thống kê
+/getdb - Tải database
+/logs - Xem log hoạt động
 
-💡 *Ví dụ:* 
-/createkey Nguyen Van A 30
+📌 *API Endpoints:*
+• GET /checkkey?key=XXX&hwid=ID - Check key
+• GET /stats - Thống kê
+• GET /health - Health check
+
+💡 *Ví dụ:* /createkey Nguyen Van A 30
         """
     else:
         text = f"""
-🎲 *SUNLON KEY SYSTEM* 🎲
+🎲 *SUNLON KEY SYSTEM PRO* 🎲
 
 Xin chào *{user_name}*!
 
@@ -181,23 +341,12 @@ Xin chào *{user_name}*!
 def create_key(message):
     """Tạo key mới"""
     if not is_admin(message.from_user.id):
-        bot.reply_to(message, "❌ Bạn không có quyền tạo key!")
+        bot.reply_to(message, "❌ Bạn không có quyền!")
         return
     
     args = message.text.split()
-    
     if len(args) < 2:
-        bot.reply_to(message, """
-❌ *Sai cú pháp!*
-
-Cách dùng:
-/createkey [tên người dùng] [số ngày]
-
-📌 *Ví dụ:*
-/createkey Nguyen Van A 30
-/createkey Tran Thi B 7
-/createkey Le Van C 0  (key vĩnh viễn)
-        """, parse_mode='Markdown')
+        bot.reply_to(message, "❌ Sai cú pháp!\n/createkey [tên] [ngày]")
         return
     
     # Xử lý tên và số ngày
@@ -212,17 +361,13 @@ Cách dùng:
         user_name = args[1]
         expire_days = 30
     
-    # Tạo key
     key_code = generate_key()
     expire_date = None
-    
     if expire_days > 0:
         expire_date = (datetime.date.today() + timedelta(days=expire_days)).strftime('%Y-%m-%d')
     
-    # Lưu vào database
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     try:
         c.execute("""
             INSERT INTO keys (key_code, user_name, created_by, expire_date, notes) 
@@ -237,10 +382,9 @@ Cách dùng:
 👤 {user_name}
 📅 {expire_date if expire_date else 'Vĩnh viễn'}
 
-💡 Gửi key này cho người dùng
+💡 API check: GET /checkkey?key={key_code}
         """
         bot.reply_to(message, text, parse_mode='Markdown')
-        
     except Exception as e:
         bot.reply_to(message, f"❌ Lỗi: {str(e)}")
     finally:
@@ -248,14 +392,13 @@ Cách dùng:
 
 @bot.message_handler(commands=['listkeys'])
 def list_keys(message):
-    """Xem danh sách key"""
     if not is_admin(message.from_user.id):
         return
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT key_code, user_name, status, expire_date 
+        SELECT key_code, user_name, status, expire_date, used_hwid 
         FROM keys 
         ORDER BY created_at DESC 
         LIMIT 20
@@ -267,11 +410,10 @@ def list_keys(message):
         bot.reply_to(message, "📭 Chưa có key nào!")
         return
     
-    text = "📋 *DANH SÁCH KEY*\n\n"
+    text = "📋 *DANH SÁCH KEY (20 gần nhất)*\n\n"
     for key in keys:
-        key_code, user_name, status, expire_date = key
+        key_code, user_name, status, expire_date, hwid = key
         
-        # Kiểm tra hết hạn
         is_expired = False
         if expire_date:
             try:
@@ -293,9 +435,11 @@ def list_keys(message):
         text += f"{icon} `{key_code}`\n"
         text += f"   👤 {user_name}\n"
         text += f"   📅 {expire_date if expire_date else 'Vĩnh viễn'}\n"
-        text += f"   📊 {status_text}\n\n"
+        text += f"   📊 {status_text}\n"
+        if hwid:
+            text += f"   🖥️ HWID: {hwid[:16]}...\n"
+        text += "\n"
     
-    # Gửi từng phần nếu quá dài
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
             bot.reply_to(message, text[i:i+4000], parse_mode='Markdown')
@@ -304,7 +448,7 @@ def list_keys(message):
 
 @bot.message_handler(commands=['check'])
 def check_key(message):
-    """Kiểm tra key"""
+    """Kiểm tra key (user)"""
     args = message.text.split()
     if len(args) != 2:
         bot.reply_to(message, "❌ Dùng: /check [KEY]")
@@ -315,7 +459,7 @@ def check_key(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT user_name, status, expire_date 
+        SELECT user_name, status, expire_date, used_hwid 
         FROM keys 
         WHERE key_code=?
     """, (key_code,))
@@ -326,7 +470,7 @@ def check_key(message):
         bot.reply_to(message, f"❌ Key `{key_code}` không tồn tại!", parse_mode='Markdown')
         return
     
-    user_name, status, expire_date = result
+    user_name, status, expire_date, hwid = result
     
     if status != 'active':
         bot.reply_to(message, "❌ Key đã bị vô hiệu!")
@@ -335,26 +479,72 @@ def check_key(message):
     if expire_date:
         try:
             expire_obj = datetime.datetime.strptime(expire_date, '%Y-%m-%d').date()
-            if expire_obj < datetime.date.today():
+            days_left = (expire_obj - datetime.date.today()).days
+            if days_left < 0:
                 bot.reply_to(message, f"⚠️ Key đã hết hạn từ {expire_date}")
                 return
+            expire_text = f"{expire_date} (còn {days_left} ngày)"
         except:
-            pass
+            expire_text = expire_date
+    else:
+        expire_text = "Vĩnh viễn"
     
     text = f"""
 ✅ *KEY HỢP LỆ!*
 
 🔑 `{key_code}`
 👤 {user_name}
-📅 {expire_date if expire_date else 'Vĩnh viễn'}
+📅 {expire_text}
+{'🖥️ Đã kích hoạt' if hwid else '⚡ Chưa kích hoạt'}
 
 🎉 Key có thể sử dụng!
     """
     bot.reply_to(message, text, parse_mode='Markdown')
 
+@bot.message_handler(commands=['checkkey'])
+def check_key_admin(message):
+    """Kiểm tra key (admin)"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    args = message.text.split()
+    if len(args) != 2:
+        bot.reply_to(message, "Dùng: /checkkey [KEY]")
+        return
+    
+    key_code = args[1].upper()
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT key_code, user_name, status, expire_date, used_hwid, used_at, created_at 
+        FROM keys 
+        WHERE key_code=?
+    """, (key_code,))
+    result = c.fetchone()
+    conn.close()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Key {key_code} không tồn tại!")
+        return
+    
+    key_code, user_name, status, expire_date, hwid, used_at, created_at = result
+    
+    text = f"""
+📋 *THÔNG TIN KEY*
+
+🔑 *Key:* `{key_code}`
+👤 *Người dùng:* {user_name}
+📊 *Trạng thái:* {status}
+📅 *Hạn sử dụng:* {expire_date if expire_date else 'Vĩnh viễn'}
+🖥️ *HWID:* {hwid if hwid else 'Chưa kích hoạt'}
+🕐 *Ngày tạo:* {created_at[:10]}
+📌 *Kích hoạt lúc:* {used_at if used_at else 'Chưa'}
+    """
+    bot.reply_to(message, text, parse_mode='Markdown')
+
 @bot.message_handler(commands=['stats'])
 def stats(message):
-    """Thống kê"""
     if not is_admin(message.from_user.id):
         return
     
@@ -376,10 +566,13 @@ def stats(message):
     c.execute("SELECT COUNT(*) FROM keys WHERE expire_date < date('now') AND expire_date IS NOT NULL")
     expired = c.fetchone()[0]
     
+    c.execute("SELECT COUNT(*) FROM logs WHERE date(timestamp)=date('now')")
+    today_checks = c.fetchone()[0]
+    
     conn.close()
     
     text = f"""
-📊 *THỐNG KÊ KEY*
+📊 *THỐNG KÊ KEY PRO*
 
 📌 *Tổng quan:*
 • Tổng số keys: *{total}*
@@ -388,13 +581,15 @@ def stats(message):
 • Đã sử dụng: *{used}* ✅
 • Hết hạn: *{expired}* ⚠️
 
+📈 *Hoạt động hôm nay:*
+• Lượt check: *{today_checks}*
+
 💡 *Tỷ lệ sử dụng:* {used/total*100:.1f}% (nếu total > 0)
     """
     bot.reply_to(message, text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['revokekey'])
 def revoke_key(message):
-    """Vô hiệu key"""
     if not is_admin(message.from_user.id):
         return
     
@@ -415,7 +610,6 @@ def revoke_key(message):
 
 @bot.message_handler(commands=['deletekey'])
 def delete_key(message):
-    """Xóa key"""
     if not is_admin(message.from_user.id):
         return
     
@@ -426,7 +620,6 @@ def delete_key(message):
     
     key_code = args[1].upper()
     
-    # Xác nhận xóa
     markup = types.InlineKeyboardMarkup()
     btn_yes = types.InlineKeyboardButton("✅ Xóa", callback_data=f"del_{key_code}")
     btn_no = types.InlineKeyboardButton("❌ Hủy", callback_data="cancel")
@@ -437,15 +630,13 @@ def delete_key(message):
 
 @bot.message_handler(commands=['getdb'])
 def get_database_telegram(message):
-    """Gửi database qua Telegram (cho admin)"""
     if not is_admin(message.from_user.id):
-        bot.reply_to(message, "❌ Bạn không có quyền tải database!")
+        bot.reply_to(message, "❌ Bạn không có quyền!")
         return
     
     try:
         if os.path.exists(DB_PATH):
             with open(DB_PATH, 'rb') as f:
-                # Đếm số key
                 conn = sqlite3.connect(DB_PATH)
                 c = conn.cursor()
                 c.execute("SELECT COUNT(*) FROM keys")
@@ -455,24 +646,55 @@ def get_database_telegram(message):
                 bot.send_document(
                     message.chat.id,
                     f,
-                    caption=f"📁 Database keys\n📊 Số key: {count}\n🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    caption=f"📁 Database PRO\n📊 Số key: {count}\n🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                logger.info(f"Database sent to admin {message.from_user.id}")
         else:
-            bot.reply_to(message, "❌ Database chưa được khởi tạo!")
+            bot.reply_to(message, "❌ Database chưa được tạo!")
     except Exception as e:
-        logger.error(f"Error sending database: {e}")
         bot.reply_to(message, f"❌ Lỗi: {str(e)}")
+
+@bot.message_handler(commands=['logs'])
+def show_logs(message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT key_code, action, ip_address, timestamp 
+        FROM logs 
+        ORDER BY timestamp DESC 
+        LIMIT 20
+    """)
+    logs = c.fetchall()
+    conn.close()
+    
+    if not logs:
+        bot.reply_to(message, "📭 Chưa có log nào!")
+        return
+    
+    text = "📋 *LOG HOẠT ĐỘNG (20 gần nhất)*\n\n"
+    for log in logs:
+        key_code, action, ip, timestamp = log
+        text += f"🕐 {timestamp[:16]}\n"
+        text += f"   🔑 `{key_code}` | {action}\n"
+        text += f"   🌐 {ip}\n\n"
+    
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            bot.reply_to(message, text[i:i+4000], parse_mode='Markdown')
+    else:
+        bot.reply_to(message, text, parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    """Xử lý callback"""
     if call.data.startswith("del_"):
         key_code = call.data[4:]
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("DELETE FROM keys WHERE key_code=?", (key_code,))
+        c.execute("DELETE FROM logs WHERE key_code=?", (key_code,))
         conn.commit()
         conn.close()
         
@@ -487,35 +709,30 @@ def handle_callback(call):
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
-    """Tin nhắn không hợp lệ"""
     bot.reply_to(message, "❓ Dùng /start để xem hướng dẫn")
 
 # ==================== CHẠY BOT ====================
 if __name__ == "__main__":
     init_db()
     print("=" * 60)
-    print("🤖 SunLon Bot đang chạy...")
+    print("🤖 SunLon Bot PRO đang chạy...")
     print(f"   Bot: @{bot_info.username}")
     print(f"   Admin ID: {ADMIN_ID}")
-    print(f"   Database: {DB_PATH}")
-    print(f"   Web URL: http://localhost:{PORT}")
+    print(f"   Port: {PORT}")
     print("=" * 60)
-    print("🌐 Endpoints:")
-    print(f"   GET / - Thông tin bot")
+    print("🌐 API Endpoints:")
     print(f"   GET /health - Health check")
-    print(f"   GET /getdb - Tải database (cho client)")
+    print(f"   GET /checkkey?key=XXX&hwid=ID - Check key")
+    print(f"   GET /stats - Thống kê (admin)")
+    print(f"   GET /getdb - Tải DB (admin)")
     print("=" * 60)
     
-    # Chạy web server trong thread riêng
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
-    print("🌐 Web server started")
     
-    # Chạy bot
     while True:
         try:
             bot.infinity_polling(timeout=60, long_polling_timeout=60)
         except Exception as e:
             print(f"⚠️ Lỗi: {e}")
-            print("Thử lại sau 10 giây...")
             time.sleep(10)
