@@ -3,13 +3,23 @@ pytelegrambotapi==4.8.0
 flask==2.3.3
 flask-cors==4.0.0
 
-# Client requirements
-customtkinter==5.2.0
+# Client requirements (giảm bớt dependencies cho server)
 requests==2.31.0
-Pillow==10.0.0
 
+<<<<<<< HEAD
 # Server requirements (tùy chọn)
 cryptography==41.0.7
 
 # Common
 python-dotenv==1.0.0
+=======
+# Server requirements
+flask==2.3.3
+flask-cors==4.0.0
+cryptography==41.0.7
+
+# Common
+python-dotenv==1.0.0
+
+# Loại bỏ customtkinter và Pillow vì không cần trên server
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20

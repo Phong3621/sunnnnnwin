@@ -1,7 +1,11 @@
 """
 Telegram Bot - SunLon Key Manager
+<<<<<<< HEAD
 Hỗ trợ cả Background Worker và Web Service (với Flask health check)
 Deploy trên Render
+=======
+Phiên bản tối giản cho Render
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 """
 
 import telebot
@@ -12,39 +16,60 @@ import datetime
 import os
 import logging
 import time
+<<<<<<< HEAD
 import threading
+=======
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 from datetime import timedelta
 from flask import Flask, jsonify
 
 # Cấu hình logging
+<<<<<<< HEAD
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+=======
+logging.basicConfig(level=logging.INFO)
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 logger = logging.getLogger(__name__)
 
 # ==================== CẤU HÌNH ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
+<<<<<<< HEAD
 DB_PATH = 'sunlon_keys.db'
 PORT = int(os.environ.get('PORT', 10000))
 
 if not BOT_TOKEN:
     print("❌ LỖI: Thiếu BOT_TOKEN environment variable!")
     print("Vui lòng thêm BOT_TOKEN vào Environment Variables trên Render")
+=======
+
+if not BOT_TOKEN:
+    print("❌ LỖI: Thiếu BOT_TOKEN!")
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     exit(1)
 
 if ADMIN_ID == 0:
     print("⚠️ CẢNH BÁO: ADMIN_ID chưa được cấu hình!")
+<<<<<<< HEAD
     print("Vui lòng thêm ADMIN_ID vào Environment Variables trên Render")
+=======
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 try:
     bot = telebot.TeleBot(BOT_TOKEN)
     bot_info = bot.get_me()
+<<<<<<< HEAD
     print(f"✅ Bot đã kết nối thành công!")
+=======
+    print(f"✅ Bot đã kết nối!")
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     print(f"   Username: @{bot_info.username}")
     print(f"   Name: {bot_info.first_name}")
 except Exception as e:
+<<<<<<< HEAD
     print(f"❌ Lỗi kết nối bot: {e}")
     exit(1)
 
@@ -73,9 +98,35 @@ def init_db():
     except Exception as e:
         print(f"❌ Database init error: {e}")
         return False
+=======
+    print(f"❌ Lỗi: {e}")
+    exit(1)
+
+# Database
+DB_PATH = 'sunlon_keys.db'
+
+def init_db():
+    """Khởi tạo database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_code TEXT UNIQUE NOT NULL,
+        user_name TEXT,
+        created_by TEXT,
+        status TEXT DEFAULT 'active',
+        expire_date DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        used_by TEXT,
+        used_at TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
+    print("✅ Database initialized")
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 def generate_key():
-    """Tạo key ngẫu nhiên 12 ký tự"""
+    """Tạo key ngẫu nhiên"""
     return secrets.token_hex(6).upper()
 
 def is_admin(user_id):
@@ -85,6 +136,7 @@ def is_admin(user_id):
     except:
         return False
 
+<<<<<<< HEAD
 def get_key_info(key_code):
     """Lấy thông tin key"""
     conn = sqlite3.connect(DB_PATH)
@@ -157,6 +209,9 @@ def run_web():
     web_app.run(host='0.0.0.0', port=PORT)
 
 # ==================== TELEGRAM COMMANDS ====================
+=======
+# ==================== COMMANDS ====================
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -166,29 +221,35 @@ def start_command(message):
     
     if is_admin(user_id):
         text = f"""
+<<<<<<< HEAD
 🎲 *SUNLON KEY MANAGER* 🎲
+=======
+🎲 *SUNLON KEY BOT* 🎲
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 Xin chào Admin *{user_name}*!
 
-📌 *Lệnh dành cho Admin:*
-/createkey [tên] [ngày] - Tạo key mới
-/listkeys - Xem danh sách key
-/checkkey [key] - Kiểm tra key
-/revokekey [key] - Vô hiệu key
-/deletekey [key] - Xóa key
+📌 *Lệnh:*
+/createkey [tên] [ngày] - Tạo key
+/listkeys - Xem danh sách
+/check [key] - Kiểm tra key
 /stats - Xem thống kê
 /getdb - Tải database keys
 
-📌 *Lệnh dành cho người dùng:*
-/check [key] - Kiểm tra key của bạn
-
 💡 *Ví dụ:* 
 /createkey Nguyen Van A 30
+<<<<<<< HEAD
 /listkeys
         """
     else:
         text = f"""
 🎲 *SUNLON KEY SYSTEM* 🎲
+=======
+        """
+    else:
+        text = f"""
+🎲 *SUNLON KEY BOT* 🎲
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 Xin chào *{user_name}*!
 
@@ -199,10 +260,11 @@ Xin chào *{user_name}*!
     
     bot.reply_to(message, text, parse_mode='Markdown')
 
-@bot.message_handler(commands=['createkey', 'create_key'])
+@bot.message_handler(commands=['createkey'])
 def create_key(message):
     """Tạo key mới"""
     if not is_admin(message.from_user.id):
+<<<<<<< HEAD
         bot.reply_to(message, "❌ Bạn không có quyền tạo key!")
         return
     
@@ -220,6 +282,14 @@ Cách dùng:
 /createkey Tran Thi B 7
 /createkey Le Van C 0  (key vĩnh viễn)
         """, parse_mode='Markdown')
+=======
+        bot.reply_to(message, "❌ Bạn không có quyền!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Sai cú pháp!\n/createkey [tên] [ngày]")
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         return
     
     # Xử lý tên và số ngày
@@ -227,13 +297,18 @@ Cách dùng:
         try:
             expire_days = int(args[-1])
             user_name = ' '.join(args[1:-1])
+<<<<<<< HEAD
         except ValueError:
+=======
+        except:
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
             user_name = ' '.join(args[1:])
             expire_days = 30
     else:
         user_name = args[1]
         expire_days = 30
     
+<<<<<<< HEAD
     # Tạo key
     key_code = generate_key()
     expire_date = None
@@ -250,21 +325,30 @@ Cách dùng:
             INSERT INTO keys (key_code, user_name, created_by, expire_date, notes) 
             VALUES (?, ?, ?, ?, ?)
         """, (key_code, user_name, str(message.from_user.id), expire_date, f"Created on {datetime.datetime.now()}"))
+=======
+    key_code = generate_key()
+    expire_date = None
+    if expire_days > 0:
+        expire_date = (datetime.date.today() + timedelta(days=expire_days)).strftime('%Y-%m-%d')
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO keys (key_code, user_name, created_by, expire_date) 
+            VALUES (?, ?, ?, ?)
+        """, (key_code, user_name, str(message.from_user.id), expire_date))
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         conn.commit()
         
         text = f"""
-✅ *KEY MỚI ĐÃ ĐƯỢC TẠO!*
+✅ *KEY MỚI!*
 
-🔑 *Key:* `{key_code}`
-👤 *Người dùng:* {user_name}
-📅 *Hạn sử dụng:* {expire_date if expire_date else 'Vĩnh viễn'}
-📊 *Số ngày:* {expire_days if expire_days > 0 else 'Vĩnh viễn'}
+🔑 `{key_code}`
+👤 {user_name}
+📅 {expire_date if expire_date else 'Vĩnh viễn'}
 
-💡 *Gửi key này cho người dùng:*
-`{key_code}`
-
-📝 *Người dùng kiểm tra bằng lệnh:*
-/check {key_code}
+💡 Gửi key này cho người dùng
         """
         bot.reply_to(message, text, parse_mode='Markdown')
         
@@ -273,31 +357,50 @@ Cách dùng:
     finally:
         conn.close()
 
-@bot.message_handler(commands=['listkeys', 'list_keys'])
+@bot.message_handler(commands=['listkeys'])
 def list_keys(message):
     """Xem danh sách key"""
     if not is_admin(message.from_user.id):
+<<<<<<< HEAD
         bot.reply_to(message, "❌ Bạn không có quyền xem danh sách!")
+=======
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         return
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
+<<<<<<< HEAD
         SELECT key_code, user_name, status, expire_date, used_by, created_at 
         FROM keys 
         ORDER BY created_at DESC 
         LIMIT 20
+=======
+        SELECT key_code, user_name, status, expire_date 
+        FROM keys 
+        ORDER BY created_at DESC 
+        LIMIT 15
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     """)
     keys = c.fetchall()
     conn.close()
     
     if not keys:
+<<<<<<< HEAD
         bot.reply_to(message, "📭 Chưa có key nào được tạo!")
         return
     
     text = "📋 *DANH SÁCH KEY (20 gần nhất)*\n\n"
     for key in keys:
         key_code, user_name, status, expire_date, used_by, created_at = key
+=======
+        bot.reply_to(message, "📭 Chưa có key nào!")
+        return
+    
+    text = "📋 *DANH SÁCH KEY*\n\n"
+    for key in keys:
+        key_code, user_name, status, expire_date = key
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         
         # Kiểm tra hết hạn
         is_expired = False
@@ -308,6 +411,7 @@ def list_keys(message):
             except:
                 pass
         
+<<<<<<< HEAD
         status_icon = {
             'active': '🟢',
             'revoked': '🔴'
@@ -324,6 +428,22 @@ def list_keys(message):
         text += f"   📅 Hạn: {expire_date if expire_date else 'Vĩnh viễn'}\n"
         text += f"   📊 {status_text}\n"
         text += f"   🕐 {created_at[:10]}\n\n"
+=======
+        if is_expired:
+            icon = '⚠️'
+            status_text = 'HẾT HẠN'
+        elif status == 'active':
+            icon = '🟢'
+            status_text = 'ACTIVE'
+        else:
+            icon = '🔴'
+            status_text = status.upper()
+        
+        text += f"{icon} `{key_code}`\n"
+        text += f"   👤 {user_name}\n"
+        text += f"   📅 {expire_date if expire_date else 'Vĩnh viễn'}\n"
+        text += f"   📊 {status_text}\n\n"
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     
     # Gửi từng phần nếu quá dài
     if len(text) > 4000:
@@ -334,11 +454,18 @@ def list_keys(message):
 
 @bot.message_handler(commands=['check'])
 def check_key(message):
+<<<<<<< HEAD
     """Kiểm tra key cho người dùng"""
     args = message.text.split()
     
     if len(args) != 2:
         bot.reply_to(message, "❌ *Sai cú pháp!*\nDùng: `/check [KEY]`", parse_mode='Markdown')
+=======
+    """Kiểm tra key"""
+    args = message.text.split()
+    if len(args) != 2:
+        bot.reply_to(message, "❌ Dùng: /check [KEY]")
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         return
     
     key_code = args[1].upper()
@@ -346,11 +473,16 @@ def check_key(message):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
+<<<<<<< HEAD
         SELECT key_code, user_name, status, expire_date, used_by 
+=======
+        SELECT user_name, status, expire_date 
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         FROM keys 
         WHERE key_code=?
     """, (key_code,))
     result = c.fetchone()
+<<<<<<< HEAD
     
     if not result:
         bot.reply_to(message, f"❌ *Key `{key_code}` không tồn tại!*", parse_mode='Markdown')
@@ -385,13 +517,39 @@ def check_key(message):
         """, (str(message.from_user.id), key_code))
         conn.commit()
     
+=======
+    conn.close()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Key `{key_code}` không tồn tại!", parse_mode='Markdown')
+        return
+    
+    user_name, status, expire_date = result
+    
+    # Kiểm tra trạng thái
+    if status != 'active':
+        bot.reply_to(message, "❌ Key đã bị vô hiệu!")
+        return
+    
+    # Kiểm tra hết hạn
+    if expire_date:
+        try:
+            expire_obj = datetime.datetime.strptime(expire_date, '%Y-%m-%d').date()
+            if expire_obj < datetime.date.today():
+                bot.reply_to(message, f"⚠️ Key đã hết hạn từ {expire_date}")
+                return
+        except:
+            pass
+    
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     text = f"""
 ✅ *KEY HỢP LỆ!*
 
-🔑 *Key:* `{key_code}`
-👤 *Người dùng:* {user_name}
-📅 *Hạn sử dụng:* {expire_date if expire_date else 'Vĩnh viễn'}
+🔑 `{key_code}`
+👤 {user_name}
+📅 {expire_date if expire_date else 'Vĩnh viễn'}
 
+<<<<<<< HEAD
 🎉 Key có thể sử dụng để kích hoạt SunLon Client!
     """
     
@@ -476,17 +634,26 @@ def delete_key(message):
     
     bot.reply_to(message, f"⚠️ Bạn có chắc muốn xóa key: `{key_code}`?", 
                  parse_mode='Markdown', reply_markup=markup)
+=======
+🎉 Key có thể sử dụng!
+    """
+    bot.reply_to(message, text, parse_mode='Markdown')
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
     """Thống kê"""
     if not is_admin(message.from_user.id):
+<<<<<<< HEAD
         bot.reply_to(message, "❌ Bạn không có quyền!")
+=======
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         return
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+<<<<<<< HEAD
     # Tổng số keys
     c.execute("SELECT COUNT(*) FROM keys")
     total = c.fetchone()[0]
@@ -510,6 +677,22 @@ def stats(message):
     # Keys sắp hết hạn (7 ngày)
     c.execute("SELECT COUNT(*) FROM keys WHERE expire_date BETWEEN date('now') AND date('now', '+7 days')")
     expiring_soon = c.fetchone()[0]
+=======
+    c.execute("SELECT COUNT(*) FROM keys")
+    total = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM keys WHERE status='active'")
+    active = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM keys WHERE status='revoked'")
+    revoked = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM keys WHERE expire_date < date('now') AND expire_date IS NOT NULL")
+    expired = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM keys WHERE used_by IS NOT NULL")
+    used = c.fetchone()[0]
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     
     conn.close()
     
@@ -518,6 +701,7 @@ def stats(message):
 
 📌 *Tổng quan:*
 • Tổng số keys: *{total}*
+<<<<<<< HEAD
 • Keys đang hoạt động: *{active}* 🟢
 • Keys đã vô hiệu: *{revoked}* 🔴
 • Keys đã sử dụng: *{used}* ✅
@@ -575,15 +759,83 @@ def handle_callback(call):
                                   chat_id=call.message.chat.id,
                                   message_id=call.message.message_id,
                                   parse_mode='Markdown')
+=======
+• Đang hoạt động: *{active}* 🟢
+• Đã vô hiệu: *{revoked}* 🔴
+• Đã sử dụng: *{used}* ✅
+• Hết hạn: *{expired}* ⚠️
+
+💡 *Tỷ lệ sử dụng:* {used/total*100:.1f}% (nếu total > 0)
+    """
+    bot.reply_to(message, text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['revokekey'])
+def revoke_key(message):
+    """Vô hiệu key"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    args = message.text.split()
+    if len(args) != 2:
+        bot.reply_to(message, "Dùng: /revokekey [KEY]")
+        return
+    
+    key_code = args[1].upper()
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE keys SET status='revoked' WHERE key_code=?", (key_code,))
+    conn.commit()
+    conn.close()
+    
+    bot.reply_to(message, f"✅ Đã vô hiệu key: `{key_code}`", parse_mode='Markdown')
+
+@bot.message_handler(commands=['deletekey'])
+def delete_key(message):
+    """Xóa key"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    args = message.text.split()
+    if len(args) != 2:
+        bot.reply_to(message, "Dùng: /deletekey [KEY]")
+        return
+    
+    key_code = args[1].upper()
+    
+    # Xác nhận xóa
+    markup = types.InlineKeyboardMarkup()
+    btn_yes = types.InlineKeyboardButton("✅ Xóa", callback_data=f"del_{key_code}")
+    btn_no = types.InlineKeyboardButton("❌ Hủy", callback_data="cancel")
+    markup.add(btn_yes, btn_no)
+    
+    bot.reply_to(message, f"⚠️ Xóa key: `{key_code}`?", 
+                 parse_mode='Markdown', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    """Xử lý callback"""
+    if call.data.startswith("del_"):
+        key_code = call.data[4:]
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
         
-        elif call.data == "cancel":
-            bot.edit_message_text("❌ Đã hủy thao tác", 
-                                  chat_id=call.message.chat.id,
-                                  message_id=call.message.message_id)
-    except Exception as e:
-        logger.error(f"Callback error: {e}")
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM keys WHERE key_code=?", (key_code,))
+        conn.commit()
+        conn.close()
+        
+        bot.edit_message_text(f"✅ Đã xóa key: `{key_code}`", 
+                              chat_id=call.message.chat.id,
+                              message_id=call.message.message_id,
+                              parse_mode='Markdown')
+    elif call.data == "cancel":
+        bot.edit_message_text("❌ Đã hủy", 
+                              chat_id=call.message.chat.id,
+                              message_id=call.message.message_id)
 
 @bot.message_handler(func=lambda message: True)
+<<<<<<< HEAD
 def echo_all(message):
     """Xử lý tin nhắn không phải lệnh"""
     bot.reply_to(message, "❓ *Không hiểu lệnh!*\nDùng `/start` để xem danh sách lệnh.", parse_mode='Markdown')
@@ -612,12 +864,32 @@ if __name__ == "__main__":
     print("🌐 Web server started on thread")
     
     # Chạy bot với xử lý lỗi
+=======
+def echo(message):
+    """Tin nhắn không hợp lệ"""
+    bot.reply_to(message, "❓ Dùng /start để xem hướng dẫn")
+
+# ==================== CHẠY BOT ====================
+if __name__ == "__main__":
+    init_db()
+    print("=" * 50)
+    print("🤖 SunLon Bot đang chạy...")
+    print(f"   Bot: @{bot_info.username}")
+    print(f"   Admin ID: {ADMIN_ID}")
+    print("=" * 50)
+    
+    # Chạy bot
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
     while True:
         try:
             print("🤖 Bot polling started...")
             bot.infinity_polling(timeout=60, long_polling_timeout=60)
         except Exception as e:
-            logger.error(f"Bot polling error: {e}")
             print(f"⚠️ Lỗi: {e}")
+<<<<<<< HEAD
             print("Đang thử kết nối lại sau 10 giây...")
             time.sleep(10)
+=======
+            print("Thử lại sau 10 giây...")
+            time.sleep(10)
+>>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
