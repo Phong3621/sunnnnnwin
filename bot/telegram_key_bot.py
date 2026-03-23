@@ -13,7 +13,7 @@ import logging
 import time
 import threading
 from datetime import timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file
 
 # Cấu hình logging
 logging.basicConfig(
@@ -116,6 +116,23 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'bot': '@' + bot_info.username}), 200
 
+# ==================== ENDPOINT CHO CLIENT TẢI DATABASE ====================
+@web_app.route('/getdb')
+def get_database():
+    """API để client tải database"""
+    try:
+        if os.path.exists(DB_PATH):
+            return send_file(
+                DB_PATH,
+                as_attachment=True,
+                download_name='sunlon_keys.db',
+                mimetype='application/x-sqlite3'
+            )
+        else:
+            return jsonify({'error': 'Database not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 def run_web():
     """Chạy Flask web server"""
     print(f"🌐 Web server đang chạy trên port {PORT}")
@@ -142,6 +159,7 @@ Xin chào Admin *{user_name}*!
 /stats - Xem thống kê
 /revokekey [key] - Vô hiệu key
 /deletekey [key] - Xóa key
+/getdb - Tải database (Telegram)
 
 💡 *Ví dụ:* 
 /createkey Nguyen Van A 30
@@ -417,6 +435,35 @@ def delete_key(message):
     bot.reply_to(message, f"⚠️ Xóa key: `{key_code}`?", 
                  parse_mode='Markdown', reply_markup=markup)
 
+@bot.message_handler(commands=['getdb'])
+def get_database_telegram(message):
+    """Gửi database qua Telegram (cho admin)"""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "❌ Bạn không có quyền tải database!")
+        return
+    
+    try:
+        if os.path.exists(DB_PATH):
+            with open(DB_PATH, 'rb') as f:
+                # Đếm số key
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM keys")
+                count = c.fetchone()[0]
+                conn.close()
+                
+                bot.send_document(
+                    message.chat.id,
+                    f,
+                    caption=f"📁 Database keys\n📊 Số key: {count}\n🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                logger.info(f"Database sent to admin {message.from_user.id}")
+        else:
+            bot.reply_to(message, "❌ Database chưa được khởi tạo!")
+    except Exception as e:
+        logger.error(f"Error sending database: {e}")
+        bot.reply_to(message, f"❌ Lỗi: {str(e)}")
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     """Xử lý callback"""
@@ -450,6 +497,13 @@ if __name__ == "__main__":
     print("🤖 SunLon Bot đang chạy...")
     print(f"   Bot: @{bot_info.username}")
     print(f"   Admin ID: {ADMIN_ID}")
+    print(f"   Database: {DB_PATH}")
+    print(f"   Web URL: http://localhost:{PORT}")
+    print("=" * 60)
+    print("🌐 Endpoints:")
+    print(f"   GET / - Thông tin bot")
+    print(f"   GET /health - Health check")
+    print(f"   GET /getdb - Tải database (cho client)")
     print("=" * 60)
     
     # Chạy web server trong thread riêng
