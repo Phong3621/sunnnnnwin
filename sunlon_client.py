@@ -16,7 +16,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 API_URL = "https://apisunhpt.onrender.com/sunlon"
-KEY_SERVER_URL = "http://localhost:5000"  # Địa chỉ server key (có thể thay đổi)
+KEY_SERVER_URL = os.environ.get('KEY_SERVER_URL', 'https://localhost:5000')  # Địa chỉ server key (có thể thay đổi)
 REFRESH_INTERVAL = 5
 
 # File lưu key

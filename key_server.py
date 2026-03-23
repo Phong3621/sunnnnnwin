@@ -49,6 +49,17 @@ def init_db():
                   action TEXT,
                   ip_address TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    # Bảng thanh toán / webhook
+    c.execute('''CREATE TABLE IF NOT EXISTS payments
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  provider TEXT,
+                  payment_id TEXT,
+                  status TEXT,
+                  amount REAL,
+                  user_name TEXT,
+                  days INTEGER,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     conn.commit()
     conn.close()
@@ -306,6 +317,37 @@ def get_stats():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/payment_webhook', methods=['POST'])
+def payment_webhook():
+    """Webhook từ Momo/PayPal hoặc bất kỳ cổng thanh toán nào"""
+    data = request.get_json() or {}
+    provider = data.get('provider', 'unknown')
+    payment_id = data.get('payment_id')
+    status = data.get('status')
+    amount = data.get('amount', 0.0)
+    user_name = data.get('user_name')
+    days = int(data.get('days', 0))
+
+    if not payment_id or not status or not user_name or days <= 0:
+        return jsonify({'error': 'missing_required_fields'}), 400
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''INSERT INTO payments (provider, payment_id, status, amount, user_name, days)
+                 VALUES (?, ?, ?, ?, ?, ?)''',
+              (provider, payment_id, status, amount, user_name, days))
+    conn.commit()
+
+    # Tự động tạo key nếu thanh toán thành công
+    response = {'success': False}
+    if status.lower() in ('success', 'completed', 'paid'):
+        key, expires_at = telegram_create_key(user_name, days)
+        response = {'success': True, 'key': key, 'expires_at': expires_at.isoformat()}
+
+    conn.close()
+    return jsonify(response)
+
+
 def log_action(key_id, action, ip_address):
     """Ghi log hoạt động"""
     try:
@@ -317,6 +359,158 @@ def log_action(key_id, action, ip_address):
         conn.close()
     except:
         pass
+
+def refresh_expired_keys():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('SELECT id, expires_at, is_active FROM keys WHERE is_active = 1')
+    rows = c.fetchall()
+    now = datetime.now()
+    for r in rows:
+        key_id, expires_at, is_active = r
+        try:
+            expires_at_date = datetime.fromisoformat(expires_at)
+            if expires_at_date < now:
+                c.execute('UPDATE keys SET is_active = 0 WHERE id = ?', (key_id,))
+                log_action(key_id, 'expired', 'system')
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+
+
+def refresh_expired_keys_loop():
+    import time
+    while True:
+        try:
+            refresh_expired_keys()
+        except Exception as e:
+            print('Auto-refresh expired keys lỗi:', e)
+        time.sleep(60)
+
+# ================== TELEGRAM BOT ==================
+
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_ADMIN_IDS = set()
+if os.environ.get('TELEGRAM_ADMIN_IDS'):
+    for t in os.environ.get('TELEGRAM_ADMIN_IDS').split(','):
+        if t.strip().isdigit():
+            TELEGRAM_ADMIN_IDS.add(int(t.strip()))
+
+import requests
+
+
+def telegram_send(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    try:
+        requests.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'})
+    except Exception:
+        pass
+
+
+def telegram_create_key(user_name, days):
+    key = generate_key()
+    key_hash = hash_key(key)
+    created_at = datetime.now()
+    expires_at = created_at + timedelta(days=days)
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''INSERT INTO keys (id, user_name, created_at, expires_at)
+                 VALUES (?, ?, ?, ?)''',
+              (key_hash, user_name, created_at, expires_at))
+    conn.commit()
+    conn.close()
+    log_action(key_hash, 'register', 'telegram')
+    return key, expires_at
+
+
+def telegram_handler(message):
+    chat_id = message['chat']['id']
+    user_id = message['from']['id']
+    if TELEGRAM_ADMIN_IDS and user_id not in TELEGRAM_ADMIN_IDS:
+        telegram_send(chat_id, '⚠️ Bạn không phải admin.')
+        return
+
+    text = message.get('text', '').strip()
+    if not text.startswith('/'):
+        telegram_send(chat_id, '⚠️ Lệnh không hợp lệ.')
+        return
+
+    parts = text.split()
+    cmd = parts[0].lower()
+
+    if cmd == '/createkey':
+        if len(parts) < 3:
+            telegram_send(chat_id, 'Sử dụng: /createkey <username> <days>')
+            return
+        user_name = parts[1]
+        try:
+            days = int(parts[2])
+        except ValueError:
+            telegram_send(chat_id, 'Số ngày phải là số nguyên.')
+            return
+        key, expires_at = telegram_create_key(user_name, days)
+        telegram_send(chat_id, f'✅ Key mới cho <b>{user_name}</b> ({days} ngày):\n<code>{key}</code>\nHạn: {expires_at.strftime("%Y-%m-%d")}')
+
+    elif cmd == '/listkeys':
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute('SELECT user_name, created_at, expires_at, is_active, used_count FROM keys ORDER BY created_at DESC LIMIT 20')
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            telegram_send(chat_id, 'Danh sách key trống.')
+            return
+        text_lines = ['🔥 Danh sách key (20 mới nhất):']
+        for r in rows:
+            text_lines.append(f"{r[0]} - {r[3] and 'active' or 'inactive'} - {r[4]} lượt - out {r[2]}")
+        telegram_send(chat_id, '\n'.join(text_lines))
+
+    elif cmd == '/help':
+        telegram_send(chat_id, 'Lệnh:\n/createkey <username> <days>\n/listkeys\n/stats')
+
+    elif cmd == '/stats':
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM keys')
+        total_keys = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM keys WHERE is_active = 1')
+        active_keys = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM keys WHERE expires_at < datetime("now")')
+        expired_keys = c.fetchone()[0]
+        c.execute('SELECT SUM(used_count) FROM keys')
+        total_used = c.fetchone()[0] or 0
+        conn.close()
+        telegram_send(chat_id, f"📊 Tổng key: {total_keys}\nActive: {active_keys}\nExpired: {expired_keys}\nUsage: {total_used}")
+
+    else:
+        telegram_send(chat_id, 'Lệnh không hỗ trợ. Gõ /help để xem.')
+
+
+def telegram_polling_loop():
+    if not TELEGRAM_BOT_TOKEN:
+        print('🔕 TELEGRAM_BOT_TOKEN chưa cấu hình, bỏ qua Telegram bot.')
+        return
+
+    offset = 0
+    while True:
+        try:
+            url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates'
+            r = requests.get(url, params={'offset': offset, 'timeout': 30})
+            data = r.json()
+            if not data.get('ok'):
+                continue
+            for item in data.get('result', []):
+                offset = item['update_id'] + 1
+                if 'message' in item:
+                    telegram_handler(item['message'])
+        except Exception as e:
+            print('Telegram polling lỗi:', e)
+            import time
+            time.sleep(5)
+
 
 # ==================== RUN SERVER ====================
 
@@ -334,5 +528,12 @@ if __name__ == '__main__':
     print("  DELETE /api/keys/<id> - Delete key (admin)")
     print("  POST   /api/keys/<id>/toggle - Toggle key (admin)")
     print("  GET    /api/stats     - Get statistics (admin)")
+    print("  Telegram bot: /createkey, /listkeys, /stats, /help")
     print("=" * 50)
+
+    # Start Telegram bot thread if token configured
+    import threading
+    if TELEGRAM_BOT_TOKEN:
+        threading.Thread(target=telegram_polling_loop, daemon=True).start()
+
     app.run(host='0.0.0.0', port=5000, debug=True)
