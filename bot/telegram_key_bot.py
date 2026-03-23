@@ -1,6 +1,10 @@
 """
 Telegram Bot - SunLon Key Manager PRO
-Đã fix tất cả lỗi, có web dashboard
+Đã fix: 
+- Lỗi request.url_root trong Telegram handler
+- Lỗi 409 Conflict
+- Rate limit chống spam
+- Hash HWID bảo mật
 """
 
 import telebot
@@ -15,7 +19,7 @@ import threading
 import hashlib
 import sys
 from datetime import timedelta
-from flask import Flask, jsonify, request, send_file, render_template_string
+from flask import Flask, jsonify, request, render_template_string
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +30,10 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 DB_PATH = 'sunlon_keys.db'
 PORT = int(os.environ.get('PORT', 10000))
+
+# URL công khai của bot (THAY THẾ request.url_root)
+PUBLIC_URL = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'https://sunnnnnwin-production.up.railway.app')
+BOT_WEB_URL = PUBLIC_URL
 
 # Rate limit
 REQUEST_LOG = {}
@@ -46,8 +54,8 @@ except Exception as e:
 
 # Xóa webhook cũ
 try:
-    bot.remove_webhook()
-    print("✅ Đã xóa webhook cũ")
+    bot.delete_webhook()
+    print("✅ Webhook deleted")
 except:
     pass
 time.sleep(1)
@@ -123,10 +131,7 @@ def log_activity(key_code, action, ip=None):
     except:
         pass
 
-# ==================== FLASK WEB SERVER ====================
-web_app = Flask(__name__)
-
-# HTML template cho dashboard
+# ==================== HTML TEMPLATE ====================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
@@ -149,7 +154,6 @@ DASHBOARD_HTML = """
             color: #ffd700;
             margin-bottom: 30px;
             font-size: 2.5em;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
         .stats {
             display: flex;
@@ -163,15 +167,13 @@ DASHBOARD_HTML = """
             border-radius: 15px;
             padding: 20px 30px;
             text-align: center;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,215,0,0.3);
         }
         .stat-number {
             font-size: 2.5em;
             font-weight: bold;
             color: #ffd700;
         }
-        .stat-label { font-size: 0.9em; color: #aaa; margin-top: 5px; }
+        .stat-label { font-size: 0.9em; color: #aaa; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -184,11 +186,7 @@ DASHBOARD_HTML = """
             text-align: left;
             border-bottom: 1px solid rgba(255,255,255,0.1);
         }
-        th {
-            background: rgba(255,215,0,0.2);
-            color: #ffd700;
-            font-weight: bold;
-        }
+        th { background: rgba(255,215,0,0.2); color: #ffd700; }
         tr:hover { background: rgba(255,255,255,0.05); }
         .active { color: #00ff00; font-weight: bold; }
         .expired { color: #ff4444; font-weight: bold; }
@@ -211,7 +209,6 @@ DASHBOARD_HTML = """
         @media (max-width: 768px) {
             th, td { padding: 8px 10px; font-size: 12px; }
             .stat-number { font-size: 1.8em; }
-            .stat-card { padding: 15px 20px; }
         }
     </style>
 </head>
@@ -226,7 +223,7 @@ DASHBOARD_HTML = """
         </div>
         <table>
             <thead>
-                <tr><th>Key</th><th>Người dùng</th><th>Trạng thái</th><th>Hết hạn</th><th>Thiết bị</th><th>Kích hoạt lúc</th></tr>
+                <tr><th>Key</th><th>Người dùng</th><th>Trạng thái</th><th>Hết hạn</th><th>Thiết bị</th><th>Kích hoạt</th></tr>
             </thead>
             <tbody>
                 {rows}
@@ -239,6 +236,9 @@ DASHBOARD_HTML = """
 </body>
 </html>
 """
+
+# ==================== FLASK WEB SERVER ====================
+web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
@@ -308,65 +308,6 @@ def home():
         )
     except Exception as e:
         return f"<h1>Error</h1><p>{str(e)}</p>", 500
-
-@web_app.route('/api/keys')
-def api_keys():
-    """API trả về danh sách key dạng JSON"""
-    token = request.args.get('token', '')
-    admin_token = os.environ.get('ADMIN_TOKEN', '')
-    if admin_token and token != admin_token:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        SELECT key_code, user_name, status, expire_date, device_name, used_at, created_at
-        FROM keys ORDER BY created_at DESC
-    """)
-    keys = []
-    for row in c.fetchall():
-        keys.append({
-            'key': row[0],
-            'user': row[1],
-            'status': row[2],
-            'expire': row[3],
-            'device': row[4] if row[4] else None,
-            'activated_at': row[5],
-            'created_at': row[6]
-        })
-    conn.close()
-    return jsonify(keys)
-
-@web_app.route('/api/key/<key_code>')
-def api_key_detail(key_code):
-    """API trả về chi tiết 1 key"""
-    token = request.args.get('token', '')
-    admin_token = os.environ.get('ADMIN_TOKEN', '')
-    if admin_token and token != admin_token:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        SELECT key_code, user_name, status, expire_date, device_name, device_info, used_at, created_at
-        FROM keys WHERE key_code=?
-    """, (key_code.upper(),))
-    result = c.fetchone()
-    conn.close()
-    
-    if not result:
-        return jsonify({'error': 'Key not found'}), 404
-    
-    return jsonify({
-        'key': result[0],
-        'user': result[1],
-        'status': result[2],
-        'expire': result[3],
-        'device': result[4] if result[4] else None,
-        'device_info': result[5] if result[5] else None,
-        'activated_at': result[6],
-        'created_at': result[7]
-    })
 
 @web_app.route('/health')
 def health():
@@ -452,6 +393,65 @@ def check_key_api():
     except Exception as e:
         return jsonify({'valid': False, 'error': str(e)}), 500
 
+@web_app.route('/reset_device')
+def reset_device_api():
+    ip = request.remote_addr
+    if is_spam(ip):
+        return jsonify({'success': False, 'error': 'Too many requests'}), 429
+    
+    try:
+        key_code = request.args.get('key', '').upper()
+        raw_hwid = request.args.get('hwid', '')
+        
+        if not key_code or not raw_hwid:
+            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+        
+        hwid_hash = hash_hwid(raw_hwid)
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT user_name, used_hwid_hash, status FROM keys WHERE key_code=?", (key_code,))
+        result = c.fetchone()
+        
+        if not result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Key không tồn tại'})
+        
+        user_name, stored_hwid, status = result
+        
+        if status != 'active':
+            conn.close()
+            return jsonify({'success': False, 'error': f'Key đã bị {status}'})
+        
+        if not stored_hwid:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Key chưa được kích hoạt'})
+        
+        if hwid_hash != stored_hwid:
+            conn.close()
+            return jsonify({'success': False, 'error': 'HWID không khớp'})
+        
+        c.execute("INSERT INTO reset_requests (key_code, user_id, status) VALUES (?, ?, 'pending')", 
+                  (key_code, user_name))
+        conn.commit()
+        conn.close()
+        
+        log_activity(key_code, 'reset_requested', ip)
+        
+        admin_msg = f"""🔔 YÊU CẦU RESET THIẾT BỊ
+
+🔑 Key: {key_code}
+👤 Người dùng: {user_name}
+
+Dùng: /resetkey {key_code} để xác nhận"""
+        
+        bot.send_message(ADMIN_ID, admin_msg)
+        
+        return jsonify({'success': True, 'message': 'Yêu cầu reset đã gửi đến admin'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 def run_web():
     web_app.run(host='0.0.0.0', port=PORT, threaded=True)
 
@@ -478,7 +478,7 @@ Xin chào Admin {user_name}!
 /getdb - Tải database
 
 🌐 Web Dashboard:
-{request.url_root}?token=admin123
+{BOT_WEB_URL}
 
 💡 Ví dụ: /createkey Nguyen Van A 30"""
     else:
@@ -534,7 +534,7 @@ def create_key(message):
 📅 Hạn: {expire_date if expire_date else 'Vĩnh viễn'}
 
 📌 API check: /checkkey?key={key_code}&hwid=YOUR_HWID
-🌐 Xem dashboard: {request.url_root}"""
+🌐 Xem dashboard: {BOT_WEB_URL}"""
         
         bot.reply_to(message, text)
     except Exception as e:
@@ -842,25 +842,35 @@ if __name__ == "__main__":
     print("🤖 SunLon Bot PRO")
     print(f"   Bot: @{bot_info.username}")
     print(f"   Admin ID: {ADMIN_ID}")
-    print("=" * 60)
-    print("🌐 Web Dashboard: http://localhost:{PORT}")
-    print("🌐 API: /checkkey?key=XXX&hwid=ID")
+    print(f"   Dashboard: {BOT_WEB_URL}")
     print("=" * 60)
     
+    # Chạy web server
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
+    print("🌐 Web server started")
     
+    # Chạy bot với xử lý lỗi 409
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+            print("🤖 Bot polling started...")
+            bot.polling(
+                non_stop=True,
+                interval=1,
+                timeout=30,
+                long_polling_timeout=30,
+                skip_pending=True
+            )
         except Exception as e:
-            if "409" in str(e):
-                print("⚠️ Conflict, restarting...")
+            error_msg = str(e)
+            if "409" in error_msg or "Conflict" in error_msg:
+                print("⚠️ Conflict detected, removing webhook...")
                 try:
-                    bot.remove_webhook()
+                    bot.delete_webhook()
+                    time.sleep(2)
                 except:
                     pass
-                time.sleep(5)
+                print("🔄 Retrying...")
             else:
-                print(f"⚠️ Lỗi: {e}")
+                print(f"⚠️ Error: {e}")
                 time.sleep(10)
