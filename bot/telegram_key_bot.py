@@ -5,7 +5,7 @@ Tính năng:
 - Reset thiết bị cho key
 - Log đầy đủ hoạt động
 """
-
+import re
 import telebot
 from telebot import types
 import sqlite3
@@ -18,6 +18,14 @@ import threading
 import hashlib
 from datetime import timedelta
 from flask import Flask, jsonify, request, send_file
+def escape_markdown(text):
+    """Escape các ký tự đặc biệt trong MarkdownV2"""
+    special_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join(f'\\{c}' if c in special_chars else c for c in text)
+
+def safe_markdown(text):
+    """Định dạng an toàn cho MarkdownV2"""
+    return escape_markdown(text)
 
 # Cấu hình logging
 logging.basicConfig(
