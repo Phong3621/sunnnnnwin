@@ -1,5 +1,6 @@
 """
-SunLon Client với xác thực key từ Telegram Bot và Server
+SunLon Client - Ứng dụng desktop hiển thị dự đoán Tài Xỉu
+Tự động tạo database và đồng bộ với server/bot
 """
 
 import customtkinter as ctk
@@ -12,27 +13,208 @@ import json
 import hashlib
 import platform
 import uuid
+import time
 from datetime import datetime, timedelta
 from tkinter import messagebox
 
 # Cấu hình
 API_URL = "https://apisunhpt.onrender.com/sunlon"
-AUTH_SERVER = "http://localhost:5000"  # Thay bằng server của bạn
+BOT_WEB_URL = "https://sunnnnnwin.onrender.com"  # Thay bằng URL bot của bạn
 REFRESH_INTERVAL = 5
+SYNC_INTERVAL = 3600  # Đồng bộ database mỗi 1 giờ
 
 # File lưu key
 KEY_FILE = "sunlon_key.json"
+DB_PATH = "sunlon_keys.db"
+
+# Cấu hình giao diện
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+
+class DatabaseManager:
+    """Quản lý database tự động"""
+    
+    def __init__(self):
+        self.last_sync = 0
+        self.init_database()
+    
+    def init_database(self):
+        """Khởi tạo database nếu chưa có"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Tạo bảng keys
+            c.execute('''CREATE TABLE IF NOT EXISTS keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_code TEXT UNIQUE NOT NULL,
+                user_name TEXT,
+                status TEXT DEFAULT 'active',
+                expire_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                used_by TEXT,
+                used_at TIMESTAMP,
+                synced INTEGER DEFAULT 0
+            )''')
+            
+            # Tạo bảng settings
+            c.execute('''CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''')
+            
+            conn.commit()
+            conn.close()
+            print("✅ Database initialized")
+            return True
+        except Exception as e:
+            print(f"❌ Database init error: {e}")
+            return False
+    
+    def sync_from_server(self, admin_token=None):
+        """Đồng bộ database từ server (bot web)"""
+        try:
+            headers = {}
+            if admin_token:
+                headers['X-Admin-Token'] = admin_token
+            
+            # Gọi API để tải database
+            response = requests.get(f"{BOT_WEB_URL}/getdb", headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                # Lưu database mới
+                with open(DB_PATH, 'wb') as f:
+                    f.write(response.content)
+                self.last_sync = time.time()
+                print("✅ Database synced from server")
+                return True
+            elif response.status_code == 401:
+                print("⚠️ Unauthorized: Invalid admin token")
+                return False
+            else:
+                print(f"⚠️ Sync failed: HTTP {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"⚠️ Sync error: {e}")
+            return False
+    
+    def has_keys(self):
+        """Kiểm tra có key nào không"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM keys")
+            count = c.fetchone()[0]
+            conn.close()
+            return count > 0
+        except:
+            return False
+    
+    def create_demo_key(self):
+        """Tạo key demo để test"""
+        demo_key = "DEMO2024"
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Kiểm tra key đã tồn tại chưa
+            c.execute("SELECT * FROM keys WHERE key_code=?", (demo_key,))
+            if not c.fetchone():
+                expire_date = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+                c.execute("""
+                    INSERT INTO keys (key_code, user_name, status, expire_date, notes) 
+                    VALUES (?, ?, ?, ?, ?)
+                """, (demo_key, "Demo User", "active", expire_date, "Key demo 7 ngày"))
+                conn.commit()
+                print("✅ Demo key created: DEMO2024")
+            
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"❌ Demo key error: {e}")
+            return False
+    
+    def get_key_info(self, key_code):
+        """Lấy thông tin key"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT user_name, status, expire_date FROM keys WHERE key_code=?", (key_code,))
+            result = c.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'user_name': result[0],
+                    'status': result[1],
+                    'expire_date': result[2]
+                }
+            return None
+        except Exception as e:
+            print(f"❌ Get key info error: {e}")
+            return None
+    
+    def validate_key(self, key_code):
+        """Kiểm tra key hợp lệ"""
+        info = self.get_key_info(key_code)
+        if not info:
+            return False, "Key không tồn tại"
+        
+        if info['status'] != 'active':
+            return False, "Key đã bị vô hiệu hóa"
+        
+        if info['expire_date']:
+            try:
+                expire_obj = datetime.strptime(info['expire_date'], '%Y-%m-%d').date()
+                if expire_obj < datetime.now().date():
+                    return False, f"Key đã hết hạn từ {info['expire_date']}"
+            except:
+                pass
+        
+        return True, "Key hợp lệ"
+    
+    def use_key(self, key_code, device_id):
+        """Đánh dấu key đã được sử dụng"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("""
+                UPDATE keys 
+                SET used_by=?, used_at=CURRENT_TIMESTAMP 
+                WHERE key_code=? AND used_by IS NULL
+            """, (device_id, key_code))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
 
 
 class KeyValidator:
-    """Xác thực key với nhiều phương thức"""
+    """Xác thực key với database"""
     
     def __init__(self):
+        self.db = DatabaseManager()
         self.key_code = None
         self.is_valid = False
         self.key_info = None
-        self.use_server = False  # Có dùng server không
         self.load_key()
+        
+        # Tự động đồng bộ database khi khởi động
+        self.auto_sync()
+    
+    def auto_sync(self):
+        """Tự động đồng bộ database"""
+        print("🔄 Đang đồng bộ database...")
+        
+        # Thử đồng bộ từ server
+        if not self.db.sync_from_server():
+            # Nếu không có server, tạo database mới
+            if not self.db.has_keys():
+                print("📝 Tạo database mới với key demo...")
+                self.db.create_demo_key()
     
     def get_device_id(self):
         """Lấy ID thiết bị duy nhất"""
@@ -58,7 +240,6 @@ class KeyValidator:
                 with open(KEY_FILE, 'r') as f:
                     data = json.load(f)
                     self.key_code = data.get('key_code')
-                    # Kiểm tra lại key
                     if self.key_code:
                         self.validate_key(self.key_code)
             except:
@@ -70,90 +251,17 @@ class KeyValidator:
             json.dump({'key_code': key_code, 'saved_at': datetime.now().isoformat()}, f)
         self.key_code = key_code
     
-    def validate_with_server(self, key_code):
-        """Xác thực qua server API"""
-        try:
-            device_id = self.get_device_id()
-            response = requests.post(
-                f"{AUTH_SERVER}/api/verify",
-                json={
-                    'key_code': key_code,
-                    'device_id': device_id
-                },
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('valid'):
-                    self.key_info = {
-                        'user_name': data.get('user_name'),
-                        'expire_date': data.get('expire_date'),
-                        'email': data.get('user_email')
-                    }
-                    return True, "Xác thực thành công"
-                else:
-                    return False, data.get('error', 'Key không hợp lệ')
-            else:
-                return False, "Server xác thực không phản hồi"
-                
-        except Exception as e:
-            return False, f"Lỗi kết nối server: {str(e)}"
-    
-    def validate_with_local_db(self, key_code):
-        """Xác thực qua database local (từ bot)"""
-        try:
-            if os.path.exists('sunlon_keys.db'):
-                conn = sqlite3.connect('sunlon_keys.db')
-                c = conn.cursor()
-                c.execute("SELECT user_name, status, expire_date FROM keys WHERE key_code=?", (key_code,))
-                result = c.fetchone()
-                conn.close()
-                
-                if result:
-                    user_name, status, expire_date = result
-                    
-                    if status != 'active':
-                        return False, "Key đã bị vô hiệu hóa"
-                    
-                    if expire_date:
-                        expire_obj = datetime.strptime(expire_date, '%Y-%m-%d').date()
-                        if expire_obj < datetime.now().date():
-                            return False, f"Key đã hết hạn từ ngày {expire_date}"
-                    
-                    self.key_info = {
-                        'user_name': user_name,
-                        'expire_date': expire_date
-                    }
-                    return True, "Key hợp lệ"
-                else:
-                    return False, "Key không tồn tại"
-            else:
-                return False, "Không tìm thấy database"
-                
-        except Exception as e:
-            return False, f"Lỗi xác thực: {str(e)}"
-    
     def validate_key(self, key_code):
-        """Kiểm tra key - ưu tiên server trước, sau đó local"""
-        # Thử xác thực qua server trước
-        if self.use_server:
-            valid, message = self.validate_with_server(key_code)
-            if valid:
-                self.is_valid = True
-                return True, message
-        
-        # Nếu server không dùng được, dùng local DB
-        valid, message = self.validate_with_local_db(key_code)
-        self.is_valid = valid
+        """Kiểm tra key hợp lệ"""
+        valid, message = self.db.validate_key(key_code)
+        if valid:
+            self.key_info = self.db.get_key_info(key_code)
+            self.is_valid = True
+            # Đánh dấu key đã sử dụng
+            self.db.use_key(key_code, self.get_device_id())
+        else:
+            self.is_valid = False
         return valid, message
-    
-    def check_and_update(self):
-        """Kiểm tra và cập nhật key"""
-        if self.key_code:
-            valid, message = self.validate_key(self.key_code)
-            return valid, message
-        return False, "Chưa có key"
 
 
 class LoginDialog:
@@ -168,7 +276,7 @@ class LoginDialog:
         """Hiển thị dialog đăng nhập"""
         self.dialog = ctk.CTkToplevel(self.parent)
         self.dialog.title("Kích hoạt SunLon")
-        self.dialog.geometry("500x500")
+        self.dialog.geometry("500x600")
         self.dialog.resizable(False, False)
         self.dialog.transient(self.parent)
         self.dialog.grab_set()
@@ -176,7 +284,7 @@ class LoginDialog:
         # Center dialog
         self.dialog.update_idletasks()
         x = self.parent.winfo_x() + (self.parent.winfo_width() // 2) - 250
-        y = self.parent.winfo_y() + (self.parent.winfo_height() // 2) - 250
+        y = self.parent.winfo_y() + (self.parent.winfo_height() // 2) - 300
         self.dialog.geometry(f"+{x}+{y}")
         
         # Nội dung
@@ -228,6 +336,17 @@ class LoginDialog:
         )
         verify_btn.pack(pady=(0, 10))
         
+        sync_btn = ctk.CTkButton(
+            main_frame,
+            text="🔄 Đồng bộ database",
+            command=self.sync_db,
+            height=35,
+            font=ctk.CTkFont(size=12),
+            fg_color="#2B2B2B",
+            hover_color="#3B3B3B"
+        )
+        sync_btn.pack(pady=(0, 10))
+        
         # Hướng dẫn
         guide_frame = ctk.CTkFrame(main_frame, corner_radius=10)
         guide_frame.pack(fill="x", pady=(20, 0))
@@ -240,9 +359,9 @@ class LoginDialog:
 3️⃣ Nhập key vào ô trên và nhấn "Kích hoạt"
 
 💡 *Kiểm tra key trên Telegram:*
-Gửi /check [key] đến bot @SunLonKeyBot
+Gửi /check [key] đến bot
 
-📞 *Liên hệ admin:* @admin_username
+📞 *Liên hệ admin để được cấp key*
         """
         
         guide = ctk.CTkLabel(
@@ -258,6 +377,23 @@ Gửi /check [key] đến bot @SunLonKeyBot
         self.key_entry.bind('<Return>', lambda e: self.verify_key())
         self.key_entry.focus()
     
+    def sync_db(self):
+        """Đồng bộ database từ server"""
+        self.message_label.configure(text="🔄 Đang đồng bộ database...", text_color="#FFD700")
+        
+        def sync_thread():
+            success = self.validator.db.sync_from_server()
+            self.dialog.after(0, lambda: self.on_sync_result(success))
+        
+        threading.Thread(target=sync_thread, daemon=True).start()
+    
+    def on_sync_result(self, success):
+        """Kết quả đồng bộ"""
+        if success:
+            self.message_label.configure(text="✅ Đồng bộ thành công!", text_color="#00FF00")
+        else:
+            self.message_label.configure(text="⚠️ Không thể đồng bộ, vui lòng thử lại sau", text_color="#FFA500")
+    
     def verify_key(self):
         """Xác thực key"""
         key_code = self.key_entry.get().strip().upper()
@@ -266,7 +402,6 @@ Gửi /check [key] đến bot @SunLonKeyBot
             return
         
         self.message_label.configure(text="Đang xác thực...", text_color="#FFD700")
-        verify_btn = self.dialog.focus_get()
         
         def verify_thread():
             valid, message = self.validator.validate_key(key_code)
@@ -309,15 +444,12 @@ class SunLonApp:
     
     def show_login(self):
         """Hiển thị màn hình đăng nhập"""
-        # Frame đăng nhập
         self.login_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         self.login_frame.pack(fill="both", expand=True)
         
-        # Center content
         center_frame = ctk.CTkFrame(self.login_frame, fg_color="transparent")
         center_frame.pack(expand=True)
         
-        # Logo
         logo = ctk.CTkLabel(
             center_frame,
             text="🎲 SUNLON PRO 🎲",
@@ -326,7 +458,6 @@ class SunLonApp:
         )
         logo.pack(pady=(0, 20))
         
-        # Loading
         loading = ctk.CTkLabel(
             center_frame,
             text="Đang kiểm tra key...",
@@ -334,12 +465,10 @@ class SunLonApp:
         )
         loading.pack(pady=20)
         
-        # Progress bar
         progress = ctk.CTkProgressBar(center_frame, width=300)
         progress.pack(pady=10)
         progress.start()
         
-        # Kiểm tra key tự động
         def check_key():
             if self.validator.key_code:
                 valid, message = self.validator.validate_key(self.validator.key_code)
@@ -359,8 +488,6 @@ class SunLonApp:
         
         dialog = LoginDialog(self.root, self.validator)
         dialog.show()
-        
-        # Chờ dialog đóng
         self.check_dialog_status(dialog)
     
     def check_dialog_status(self, dialog):
@@ -378,12 +505,14 @@ class SunLonApp:
         
         self.init_main_app()
         
-        # Hiển thị thông báo chào mừng
         if self.validator.key_info:
             welcome_text = f"Chào mừng {self.validator.key_info['user_name']}!"
             if self.validator.key_info.get('expire_date'):
-                days_left = (datetime.strptime(self.validator.key_info['expire_date'], '%Y-%m-%d').date() - datetime.now().date()).days
-                welcome_text += f" Còn {days_left} ngày sử dụng"
+                try:
+                    days_left = (datetime.strptime(self.validator.key_info['expire_date'], '%Y-%m-%d').date() - datetime.now().date()).days
+                    welcome_text += f" Còn {days_left} ngày sử dụng"
+                except:
+                    pass
             self.root.title(f"SunLon - {welcome_text}")
     
     def init_main_app(self):
@@ -421,7 +550,6 @@ class SunLonApp:
         )
         self.time_label.pack(side="left", padx=10)
         
-        # User info
         if self.validator.key_info:
             user_text = f"👤 {self.validator.key_info['user_name']}"
             if self.validator.key_info.get('expire_date'):
@@ -664,5 +792,8 @@ class SunLonApp:
 
 # ==================== CHẠY ====================
 if __name__ == "__main__":
+    print("=" * 50)
+    print("🎲 SUNLON CLIENT")
+    print("=" * 50)
     app = SunLonApp()
     app.run()

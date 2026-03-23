@@ -1,7 +1,6 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
 .Python
 env/
@@ -14,6 +13,7 @@ venv.bak/
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
 # Keys và secrets
 *.key
@@ -21,21 +21,24 @@ venv.bak/
 *.dat
 sunlon_key.json
 encryption.key
+.env
+.env.local
 
 # Logs
 *.log
 bot_debug.log
+server.log
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
+*~
 .DS_Store
 Thumbs.db
 
-# Local config
-config.local.py
-.env
+# Build
+dist/
+build/
+*.egg-info/
