@@ -1,12 +1,4 @@
-"""
-Telegram Bot - SunLon Key Manager
-<<<<<<< HEAD
-Hỗ trợ cả Background Worker và Web Service (với Flask health check)
-Deploy trên Render
-=======
-Phiên bản tối giản cho Render
->>>>>>> 244213efb808f7ddf3fd891d9296d62101d9ed20
-"""
+
 
 import telebot
 from telebot import types
